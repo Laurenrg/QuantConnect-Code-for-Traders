@@ -1,0 +1,81 @@
+from AlgorithmImports import *
+import matplotlib.pyplot as plt
+import pandas as pd
+
+class LongCallMomentum(QCAlgorithm): 
+
+    def initialize(self):
+        self.set_start_date(2020, 1, 1)
+        self.set_end_date(2024, 8, 20)
+        self.set_cash(50000)
+
+        option = self.add_option("NVDA", Resolution.MINUTE)
+        self._symbol = option.symbol
+        self.underlying = self.add_equity("NVDA", Resolution.DAILY).symbol
+        option.set_filter(lambda x: x.include_weeklys().naked_call(21,3))
+        
+        self._sma = self.sma(self.underlying, 50)
+        self.set_warm_up(50)
+        self.set_risk_management(MaximumDrawdownPercentPerSecurity(.7))
+        # self._momp = self.momp(self.underlying,7)
+        # self._mom = self.mom(self.underlying, 10)
+        self._rvi = self.rvi(self.underlying, 10)
+
+        self.rvi_window = RollingWindow[float](10)
+        self.set_benchmark(self.underlying)
+        self._securities = []
+        self.iv_values = []
+    def on_data(self, slice: Slice) -> None:
+
+        if self.portfolio.invested:
+            self.debug(f"profit {self.portfolio.total_unrealized_profit}")
+            self.debug(f"cost {self.portfolio.total_absolute_holdings_cost}")
+            expiries = [x.Key.ID.Date for x in self.Portfolio if x.Value.Invested and x.Value.Type==SecurityType.Option]
+
+            for expiry in expiries:
+                if (expiry - self.time).days <=.5:
+                    self.debug(f"Position Expiring")
+                    self.liquidate()
+                return
+
+        if self._sma.is_ready:
+            
+            if self.underlying in slice.bars:
+                bar = slice.bars[self.underlying]
+                self.rvi_window.add((self._rvi.current.value))
+                
+                self.plot("rvi", self._rvi.current.value)
+                self.debug(self._rvi)
+            
+               
+                if (bar.close > self._sma.current.value):
+                        
+                    # Get the OptionChain
+                        # self.debug(f"underlying is greater than sma")
+                        chain = slice.option_chains.get(self._symbol, None)
+                        if not chain: 
+                            return
+
+                        if chain:
+                            expiry = max([x.expiry for x in chain])
+                            call_contracts = sorted([x for x in chain
+                            if x.right == OptionRight.CALL and x.expiry == expiry], key=lambda x: x.expiry)
+
+                            if not call_contracts:
+                                return
+
+                            call = call_contracts[0]
+                            
+                            if call:
+                                self.debug({call})
+                                delta = call.greeks.delta
+                                self.debug(f"delta {delta}")
+                                iv = call.implied_volatility
+                                self.debug(f"IV {iv}")
+                                expiry = max([x.expiry for x in chain])
+                                if iv <=.55:
+                                    naked_call = OptionStrategies.naked_call(self._symbol, call.strike, expiry)
+                                    self.sell(naked_call, 10)
+                                        # self.debug(f"Symbol: {ticket.symbol}; Quantity filled: {ticket.quantity_filled}; Fill price: {ticket.average_fill_price}")
+    
+    
